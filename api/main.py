@@ -172,3 +172,49 @@ def get_restaurant_detail(business_id: str):
         "metrics": dict(metrics) if metrics else {},
         "recent_reviews": [dict(r) for r in reviews]
     }
+@app.get("/intelligence/top-problem-drivers")
+def get_top_problem_drivers(city: str | None = None, limit: int = 5):
+
+    conn = get_db()
+
+    query = """
+        SELECT
+            rf.factor_dominante AS factor,
+            COUNT(*) AS negative_reviews
+        FROM reviews r
+        LEFT JOIN review_factors rf
+            ON r.review_id = rf.review_id
+        WHERE r.sentiment_binary = 'negative'
+          AND rf.factor_dominante IS NOT NULL
+          AND rf.factor_dominante != ''
+    """
+
+    params = []
+
+    if city:
+        query += " AND r.city = ?"
+        params.append(city)
+
+    query += """
+        GROUP BY rf.factor_dominante
+        ORDER BY negative_reviews DESC
+        LIMIT ?
+    """
+
+    params.append(limit)
+
+    rows = conn.execute(query, params).fetchall()
+
+    conn.close()
+
+    return {
+        "city": city if city else "all",
+        "limit": limit,
+        "top_problem_drivers": [
+            {
+                "factor": row["factor"],
+                "negative_reviews": row["negative_reviews"]
+            }
+            for row in rows
+        ]
+    }
