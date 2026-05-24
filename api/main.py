@@ -218,3 +218,36 @@ def get_top_problem_drivers(city: str | None = None, limit: int = 5):
             for row in rows
         ]
     }
+
+@app.get("/restaurant-kpis")
+def get_restaurant_kpis(business_name: str):
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT
+            COUNT(*) AS total_reviews,
+            ROUND(AVG(review_stars), 2) AS avg_stars,
+            ROUND(
+                100.0 * SUM(CASE WHEN sentiment_binary = 'positive' THEN 1 ELSE 0 END) / COUNT(*),
+                2
+            ) AS positive_pct
+        FROM reviews
+        WHERE business_name = ?
+    """, (business_name,)).fetchone()
+
+    conn.close()
+
+    if not row or row["total_reviews"] == 0:
+        return {
+            "business_name": business_name,
+            "total_reviews": 0,
+            "avg_stars": 0,
+            "positive_pct": 0,
+        }
+
+    return {
+        "business_name": business_name,
+        "total_reviews": row["total_reviews"],
+        "avg_stars": row["avg_stars"],
+        "positive_pct": row["positive_pct"],
+    }
