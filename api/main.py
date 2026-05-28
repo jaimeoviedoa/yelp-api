@@ -273,3 +273,105 @@ def get_top_satisfaction_drivers(city: str = Query("all"), limit: int = Query(5)
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return {"city": city, "limit": limit, "top_satisfaction_drivers": [dict(r) for r in rows]}
+# ── ENDPOINT 11: intelligence topics ─────────────────────────
+@app.get("/intelligence/topics")
+def get_intelligence_topics():
+    conn = get_db()
+    themes = conn.execute("""
+        SELECT rf.factor_dominante as id,
+               rf.factor_dominante as label,
+               COUNT(*) as mentions,
+               SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) as positive_mentions,
+               SUM(CASE WHEN r.sentiment_binary='negative' THEN 1 ELSE 0 END) as negative_mentions,
+               ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE rf.factor_dominante IS NOT NULL
+        GROUP BY rf.factor_dominante
+        ORDER BY mentions DESC
+    """).fetchall()
+
+    deep_dive = {}
+    for theme in themes:
+        tid = theme["id"]
+        reviews = conn.execute("""
+            SELECT r.text, r.review_stars, r.date, r.sentiment_binary as sentiment
+            FROM reviews r
+            JOIN review_factors rf ON r.review_id = rf.review_id
+            WHERE rf.factor_dominante = ?
+            ORDER BY r.date DESC LIMIT 5
+        """, (tid,)).fetchall()
+        deep_dive[tid] = {
+            "positive": [],
+            "negative": [],
+            "reviews": [dict(r) for r in reviews]
+        }
+
+    conn.close()
+    return {"themes": [dict(t) for t in themes], "deepDiveData": deep_dive}
+
+
+# ── ENDPOINT 11: intelligence topics ─────────────────────────
+@app.get("/intelligence/topics")
+def get_intelligence_topics():
+    conn = get_db()
+    themes = conn.execute("""
+        SELECT rf.factor_dominante as id,
+               rf.factor_dominante as label,
+               COUNT(*) as mentions,
+               SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) as positive_mentions,
+               SUM(CASE WHEN r.sentiment_binary='negative' THEN 1 ELSE 0 END) as negative_mentions,
+               ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE rf.factor_dominante IS NOT NULL
+        GROUP BY rf.factor_dominante
+        ORDER BY mentions DESC
+    """).fetchall()
+    deep_dive = {}
+    for theme in themes:
+        tid = theme["id"]
+        reviews = conn.execute("""
+            SELECT r.text, r.review_stars, r.date, r.sentiment_binary as sentiment
+            FROM reviews r
+            JOIN review_factors rf ON r.review_id = rf.review_id
+            WHERE rf.factor_dominante = ?
+            ORDER BY r.date DESC LIMIT 5
+        """, (tid,)).fetchall()
+        deep_dive[tid] = {"positive": [], "negative": [], "reviews": [dict(r) for r in reviews]}
+    conn.close()
+    return {"themes": [dict(t) for t in themes], "deepDiveData": deep_dive}
+
+# ── ENDPOINT 12: market position ─────────────────────────────
+@app.get("/intelligence/market-position")
+def get_market_position():
+    conn = get_db()
+    factors = conn.execute("""
+        SELECT rf.factor_dominante as factor,
+               COUNT(*) as total,
+               SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) as positives,
+               ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment_pct
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE rf.factor_dominante IS NOT NULL
+        GROUP BY rf.factor_dominante
+        ORDER BY total DESC
+    """).fetchall()
+    factors_list = [dict(f) for f in factors]
+    avg_sentiment = sum(f["sentiment_pct"] for f in factors_list) / len(factors_list) if factors_list else 0
+    strengths = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] >= 50]
+    quick_wins = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] < 50]
+    critical = [f for f in factors_list if f["sentiment_pct"] < 40 and f["total"] >= 50]
+    monitor = [f for f in factors_list if f["sentiment_pct"] < 60 and f["total"] < 50]
+    kpis = conn.execute("SELECT AVG(review_stars) as avg_stars, COUNT(*) as total FROM reviews").fetchone()
+    conn.close()
+    return {
+        "market_standing": {"your_rating": round(kpis["avg_stars"], 2), "category_avg": 3.5, "percentile": round(avg_sentiment)},
+        "share_of_voice": {"your_mentions": kpis["total"], "category_total": kpis["total"], "share": 100},
+        "sentiment_vs_competition": {"your_nps": round(avg_sentiment - 20), "competitor_avg": 25, "category_avg": 20},
+        "strengths": strengths,
+        "quick_wins": quick_wins,
+        "critical_issues": critical,
+        "monitor": monitor,
+        "action_plan": [f"Improve {f['factor']} experience ({f['sentiment_pct']}% positive)" for f in critical[:3]]
+    }
