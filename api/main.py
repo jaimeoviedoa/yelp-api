@@ -375,3 +375,18 @@ def get_market_position():
         "monitor": monitor,
         "action_plan": [f"Improve {f['factor']} experience ({f['sentiment_pct']}% positive)" for f in critical[:3]]
     }
+    # ── ENDPOINT 13: sentiment radar ─────────────────────────────
+@app.get("/intelligence/sentiment-radar")
+def get_sentiment_radar():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT rf.factor_dominante as factor,
+               ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment,
+               COUNT(*) as mentions
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE rf.factor_dominante IS NOT NULL
+        GROUP BY rf.factor_dominante
+    """).fetchall()
+    conn.close()
+    return {"radar": [dict(r) for r in rows]}
