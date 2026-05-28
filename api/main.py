@@ -251,3 +251,25 @@ def get_restaurant_kpis(business_name: str):
         "avg_stars": row["avg_stars"],
         "positive_pct": row["positive_pct"],
     }
+
+# ── ENDPOINT 10: top satisfaction drivers ────────────────────
+@app.get("/intelligence/top-satisfaction-drivers")
+def get_top_satisfaction_drivers(city: str = Query("all"), limit: int = Query(5)):
+    conn = get_db()
+    query = """
+        SELECT rf.factor_dominante as factor,
+               COUNT(*) as positive_reviews
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE r.sentiment_binary = 'positive'
+        AND rf.factor_dominante IS NOT NULL
+    """
+    params = []
+    if city != "all":
+        query += " AND r.city = ?"
+        params.append(city)
+    query += " GROUP BY rf.factor_dominante ORDER BY positive_reviews DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return {"city": city, "limit": limit, "top_satisfaction_drivers": [dict(r) for r in rows]}
