@@ -19,17 +19,16 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ── ENDPOINT 1: health check ──────────────────────────────────
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Yelp API funcionando"}
 
-# ── ENDPOINT 2: reviews ───────────────────────────────────────
 @app.get("/reviews")
 def get_reviews(
     city: str = Query(None),
     sentiment: str = Query(None),
     factor: str = Query(None),
+    business_id: str = Query(None),
     limit: int = Query(50)
 ):
     conn = get_db()
@@ -49,12 +48,14 @@ def get_reviews(
     if factor:
         query += " AND rf.factor_dominante = ?"
         params.append(factor)
+    if business_id:
+        query += " AND r.business_id = ?"
+        params.append(business_id)
     query += f" LIMIT {limit}"
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
-# ── ENDPOINT 3: KPIs generales ────────────────────────────────
 @app.get("/kpis")
 def get_kpis():
     conn = get_db()
@@ -70,7 +71,6 @@ def get_kpis():
     conn.close()
     return data
 
-# ── ENDPOINT 4: sentimiento por factor ───────────────────────
 @app.get("/factors")
 def get_factors():
     conn = get_db()
@@ -88,7 +88,6 @@ def get_factors():
     conn.close()
     return [dict(r) for r in rows]
 
-# ── ENDPOINT 5: taxonomía ─────────────────────────────────────
 @app.get("/taxonomy")
 def get_taxonomy():
     conn = get_db()
@@ -102,7 +101,6 @@ def get_taxonomy():
         result.append(d)
     return result
 
-# ── ENDPOINT 6: restaurantes ──────────────────────────────────
 @app.get("/restaurants")
 def get_restaurants(city: str = Query(None)):
     conn = get_db()
@@ -122,7 +120,7 @@ def get_restaurants(city: str = Query(None)):
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
-# ── ENDPOINT 7: business metrics ──────────────────────────────
+
 @app.get("/business-metrics")
 def get_business_metrics(city: str = Query(None)):
     conn = get_db()
@@ -136,7 +134,6 @@ def get_business_metrics(city: str = Query(None)):
     conn.close()
     return [dict(r) for r in rows]
 
-# ── ENDPOINT 8: theme metrics por restaurante ─────────────────
 @app.get("/theme-metrics/{business_id}")
 def get_theme_metrics(business_id: str):
     conn = get_db()
@@ -150,7 +147,6 @@ def get_theme_metrics(business_id: str):
     conn.close()
     return [dict(r) for r in rows]
 
-# ── ENDPOINT 9: detalle de un restaurante ─────────────────────
 @app.get("/restaurant/{business_id}")
 def get_restaurant_detail(business_id: str):
     conn = get_db()
@@ -172,57 +168,10 @@ def get_restaurant_detail(business_id: str):
         "metrics": dict(metrics) if metrics else {},
         "recent_reviews": [dict(r) for r in reviews]
     }
-@app.get("/intelligence/top-problem-drivers")
-def get_top_problem_drivers(city: str | None = None, limit: int = 5):
-
-    conn = get_db()
-
-    query = """
-        SELECT
-            rf.factor_dominante AS factor,
-            COUNT(*) AS negative_reviews
-        FROM reviews r
-        LEFT JOIN review_factors rf
-            ON r.review_id = rf.review_id
-        WHERE r.sentiment_binary = 'negative'
-          AND rf.factor_dominante IS NOT NULL
-          AND rf.factor_dominante != ''
-    """
-
-    params = []
-
-    if city:
-        query += " AND r.city = ?"
-        params.append(city)
-
-    query += """
-        GROUP BY rf.factor_dominante
-        ORDER BY negative_reviews DESC
-        LIMIT ?
-    """
-
-    params.append(limit)
-
-    rows = conn.execute(query, params).fetchall()
-
-    conn.close()
-
-    return {
-        "city": city if city else "all",
-        "limit": limit,
-        "top_problem_drivers": [
-            {
-                "factor": row["factor"],
-                "negative_reviews": row["negative_reviews"]
-            }
-            for row in rows
-        ]
-    }
 
 @app.get("/restaurant-kpis")
 def get_restaurant_kpis(business_name: str):
     conn = get_db()
-
     row = conn.execute("""
         SELECT
             COUNT(*) AS total_reviews,
@@ -234,27 +183,37 @@ def get_restaurant_kpis(business_name: str):
         FROM reviews
         WHERE business_name = ?
     """, (business_name,)).fetchone()
-
     conn.close()
-
     if not row or row["total_reviews"] == 0:
-        return {
-            "business_name": business_name,
-            "total_reviews": 0,
-            "avg_stars": 0,
-            "positive_pct": 0,
-        }
+        return {"business_name": business_name, "total_reviews": 0, "avg_stars": 0, "positive_pct": 0}
+    return {"business_name": business_name, "total_reviews": row["total_reviews"], "avg_stars": row["avg_stars"], "positive_pct": row["positive_pct"]}
 
-    return {
-        "business_name": business_name,
-        "total_reviews": row["total_reviews"],
-        "avg_stars": row["avg_stars"],
-        "positive_pct": row["positive_pct"],
-    }
+@app.get("/intelligence/top-problem-drivers")
+def get_top_problem_drivers(city: str = Query("all"), business_id: str = Query("all"), limit: int = Query(5)):
+    conn = get_db()
+    query = """
+        SELECT rf.factor_dominante as factor,
+               COUNT(*) as negative_reviews
+        FROM review_factors rf
+        JOIN reviews r ON rf.review_id = r.review_id
+        WHERE r.sentiment_binary = 'negative'
+        AND rf.factor_dominante IS NOT NULL
+    """
+    params = []
+    if city != "all":
+        query += " AND r.city = ?"
+        params.append(city)
+    if business_id != "all":
+        query += " AND r.business_id = ?"
+        params.append(business_id)
+    query += " GROUP BY rf.factor_dominante ORDER BY negative_reviews DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return {"city": city, "limit": limit, "top_problem_drivers": [dict(r) for r in rows]}
 
-# ── ENDPOINT 10: top satisfaction drivers ────────────────────
 @app.get("/intelligence/top-satisfaction-drivers")
-def get_top_satisfaction_drivers(city: str = Query("all"), limit: int = Query(5)):
+def get_top_satisfaction_drivers(city: str = Query("all"), business_id: str = Query("all"), limit: int = Query(5)):
     conn = get_db()
     query = """
         SELECT rf.factor_dominante as factor,
@@ -268,16 +227,21 @@ def get_top_satisfaction_drivers(city: str = Query("all"), limit: int = Query(5)
     if city != "all":
         query += " AND r.city = ?"
         params.append(city)
+    if business_id != "all":
+        query += " AND r.business_id = ?"
+        params.append(business_id)
     query += " GROUP BY rf.factor_dominante ORDER BY positive_reviews DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return {"city": city, "limit": limit, "top_satisfaction_drivers": [dict(r) for r in rows]}
-# ── ENDPOINT 11: intelligence topics ─────────────────────────
+
 @app.get("/intelligence/topics")
-def get_intelligence_topics():
+def get_intelligence_topics(business_id: str = Query("all")):
     conn = get_db()
-    themes = conn.execute("""
+    extra = " AND r.business_id = ?" if business_id != "all" else ""
+    params = [business_id] if business_id != "all" else []
+    themes = conn.execute(f"""
         SELECT rf.factor_dominante as id,
                rf.factor_dominante as label,
                COUNT(*) as mentions,
@@ -286,84 +250,50 @@ def get_intelligence_topics():
                ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment
         FROM review_factors rf
         JOIN reviews r ON rf.review_id = r.review_id
-        WHERE rf.factor_dominante IS NOT NULL
+        WHERE rf.factor_dominante IS NOT NULL{extra}
         GROUP BY rf.factor_dominante
         ORDER BY mentions DESC
-    """).fetchall()
-
+    """, params).fetchall()
     deep_dive = {}
     for theme in themes:
         tid = theme["id"]
-        reviews = conn.execute("""
+        rparams = ([business_id, tid] if business_id != "all" else [tid])
+        rextra = " AND r.business_id = ?" if business_id != "all" else ""
+        reviews = conn.execute(f"""
             SELECT r.text, r.review_stars, r.date, r.sentiment_binary as sentiment
             FROM reviews r
             JOIN review_factors rf ON r.review_id = rf.review_id
-            WHERE rf.factor_dominante = ?
+            WHERE rf.factor_dominante IS NOT NULL{rextra}
+            AND rf.factor_dominante = ?
             ORDER BY r.date DESC LIMIT 5
-        """, (tid,)).fetchall()
-        deep_dive[tid] = {
-            "positive": [],
-            "negative": [],
-            "reviews": [dict(r) for r in reviews]
-        }
-
-    conn.close()
-    return {"themes": [dict(t) for t in themes], "deepDiveData": deep_dive}
-
-
-# ── ENDPOINT 11: intelligence topics ─────────────────────────
-@app.get("/intelligence/topics")
-def get_intelligence_topics():
-    conn = get_db()
-    themes = conn.execute("""
-        SELECT rf.factor_dominante as id,
-               rf.factor_dominante as label,
-               COUNT(*) as mentions,
-               SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) as positive_mentions,
-               SUM(CASE WHEN r.sentiment_binary='negative' THEN 1 ELSE 0 END) as negative_mentions,
-               ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment
-        FROM review_factors rf
-        JOIN reviews r ON rf.review_id = r.review_id
-        WHERE rf.factor_dominante IS NOT NULL
-        GROUP BY rf.factor_dominante
-        ORDER BY mentions DESC
-    """).fetchall()
-    deep_dive = {}
-    for theme in themes:
-        tid = theme["id"]
-        reviews = conn.execute("""
-            SELECT r.text, r.review_stars, r.date, r.sentiment_binary as sentiment
-            FROM reviews r
-            JOIN review_factors rf ON r.review_id = rf.review_id
-            WHERE rf.factor_dominante = ?
-            ORDER BY r.date DESC LIMIT 5
-        """, (tid,)).fetchall()
+        """, rparams).fetchall()
         deep_dive[tid] = {"positive": [], "negative": [], "reviews": [dict(r) for r in reviews]}
     conn.close()
     return {"themes": [dict(t) for t in themes], "deepDiveData": deep_dive}
 
-# ── ENDPOINT 12: market position ─────────────────────────────
 @app.get("/intelligence/market-position")
-def get_market_position():
+def get_market_position(business_id: str = Query("all")):
     conn = get_db()
-    factors = conn.execute("""
+    extra = " AND r.business_id = ?" if business_id != "all" else ""
+    params = [business_id] if business_id != "all" else []
+    factors = conn.execute(f"""
         SELECT rf.factor_dominante as factor,
                COUNT(*) as total,
                SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) as positives,
                ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment_pct
         FROM review_factors rf
         JOIN reviews r ON rf.review_id = r.review_id
-        WHERE rf.factor_dominante IS NOT NULL
+        WHERE rf.factor_dominante IS NOT NULL{extra}
         GROUP BY rf.factor_dominante
         ORDER BY total DESC
-    """).fetchall()
+    """, params).fetchall()
     factors_list = [dict(f) for f in factors]
     avg_sentiment = sum(f["sentiment_pct"] for f in factors_list) / len(factors_list) if factors_list else 0
-    strengths = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] >= 50]
-    quick_wins = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] < 50]
-    critical = [f for f in factors_list if f["sentiment_pct"] < 40 and f["total"] >= 50]
-    monitor = [f for f in factors_list if f["sentiment_pct"] < 60 and f["total"] < 50]
-    kpis = conn.execute("SELECT AVG(review_stars) as avg_stars, COUNT(*) as total FROM reviews").fetchone()
+    strengths = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] >= 3]
+    quick_wins = [f for f in factors_list if f["sentiment_pct"] >= 60 and f["total"] < 3]
+    critical = [f for f in factors_list if f["sentiment_pct"] < 40 and f["total"] >= 3]
+    monitor = [f for f in factors_list if f["sentiment_pct"] < 60 and f["total"] < 3]
+    kpis = conn.execute(f"SELECT AVG(review_stars) as avg_stars, COUNT(*) as total FROM reviews r WHERE 1=1{extra}", params).fetchone()
     conn.close()
     return {
         "market_standing": {"your_rating": round(kpis["avg_stars"], 2), "category_avg": 3.5, "percentile": round(avg_sentiment)},
@@ -375,18 +305,21 @@ def get_market_position():
         "monitor": monitor,
         "action_plan": [f"Improve {f['factor']} experience ({f['sentiment_pct']}% positive)" for f in critical[:3]]
     }
-    # ── ENDPOINT 13: sentiment radar ─────────────────────────────
+
 @app.get("/intelligence/sentiment-radar")
-def get_sentiment_radar():
+def get_sentiment_radar(business_id: str = Query("all")):
     conn = get_db()
-    rows = conn.execute("""
+    extra = " AND r.business_id = ?" if business_id != "all" else ""
+    params = [business_id] if business_id != "all" else []
+    rows = conn.execute(f"""
         SELECT rf.factor_dominante as factor,
                ROUND(SUM(CASE WHEN r.sentiment_binary='positive' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as sentiment,
                COUNT(*) as mentions
         FROM review_factors rf
         JOIN reviews r ON rf.review_id = r.review_id
-        WHERE rf.factor_dominante IS NOT NULL
+        WHERE rf.factor_dominante IS NOT NULL{extra}
         GROUP BY rf.factor_dominante
-    """).fetchall()
+    """, params).fetchall()
     conn.close()
     return {"radar": [dict(r) for r in rows]}
+    
